@@ -27,3 +27,4 @@ R2_BUCKET = "diskrop"
 
 # redeploy trigger: secrets configured 2026-11-02
 # redeploy trigger: ADMIN_PASSWORD rotated 2026-11-02
+# redeploy trigger: ADMIN_PASSWORD reset to alphanumeric 2026-11-02
