@@ -1,6 +1,7 @@
-/* CunDrop 面板逻辑 (Cloudflare Workers 版) */
+/* CunDrop 面板逻辑 (Aurora UI) */
 const $ = (s) => document.querySelector(s);
 let FILES = [], SHARES = [];
+const QUOTA_BYTES = 10 * 1024 * 1024 * 1024; // R2 免费额度 10GB
 
 function toast(msg) {
   const t = $("#toast");
@@ -26,6 +27,8 @@ function kindOf(mime) {
   if (mime.startsWith("audio")) return "audio";
   return "file";
 }
+const fileUrl = (id, download) =>
+  "/api/files/file?id=" + encodeURIComponent(id) + (download ? "&download=1" : "");
 async function api(url, opt = {}) {
   const r = await fetch(url, opt);
   if (r.status === 401) { location.href = "/login.html"; throw new Error("未登录"); }
@@ -37,9 +40,9 @@ function esc(s) { const d = document.createElement("div"); d.textContent = s; re
 function escAttr(s) { return String(s).replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/"/g, "&quot;"); }
 
 /* ---------- 视图切换 ---------- */
-document.querySelectorAll(".nav-item").forEach((b) =>
+document.querySelectorAll(".tab").forEach((b) =>
   b.addEventListener("click", () => {
-    document.querySelectorAll(".nav-item").forEach((x) => x.classList.remove("active"));
+    document.querySelectorAll(".tab").forEach((x) => x.classList.remove("active"));
     b.classList.add("active");
     document.querySelectorAll(".view").forEach((v) => v.classList.add("hidden"));
     $("#view-" + b.dataset.view).classList.remove("hidden");
@@ -55,21 +58,34 @@ async function loadFiles() {
   FILES = j.files;
   renderFiles();
   const st = await api("/api/stats");
-  $("#storageText").textContent = `${st.count} 个文件 · 共 ${fmtSize(st.bytes)} · ${st.shares} 个分享`;
-  $("#storageBar").style.width = Math.min(100, st.count) + "%";
+  $("#statCount").textContent = st.count;
+  $("#statSize").textContent = fmtSize(st.bytes);
+  $("#statShares").textContent = st.shares;
+  const pct = Math.min(100, (st.bytes / QUOTA_BYTES) * 100);
+  $("#statQuota").textContent = pct.toFixed(1) + "%";
+  $("#quotaBar").style.width = Math.max(pct, st.bytes > 0 ? 1.5 : 0) + "%";
+}
+function thumbHtml(f) {
+  const kind = kindOf(f.mime);
+  if (kind === "image") return `<img src="${fileUrl(f.id)}" alt="" loading="lazy">`;
+  if (kind === "video")
+    return `<video src="${fileUrl(f.id)}" preload="metadata" muted playsinline></video><span class="play-badge">▶ 视频</span>`;
+  if (kind === "audio") return `<div class="file-icon audio"></div>`;
+  return `<div class="file-icon file"></div>`;
 }
 function renderFiles() {
   $("#emptyFiles").classList.toggle("hidden", FILES.length > 0);
   $("#fileList").innerHTML = FILES.map((f) => `
-    <div class="file-row">
-      <div class="file-icon ${kindOf(f.mime)}"></div>
-      <div class="file-info">
-        <div class="file-name">${esc(f.name)}</div>
+    <div class="fcard">
+      <div class="thumb" onclick="openPreview('${f.id}')">${thumbHtml(f)}</div>
+      <div class="fcard-body">
+        <div class="file-name" title="${escAttr(f.name)}">${esc(f.name)}</div>
         <div class="file-sub">${fmtSize(f.size)} · ${fmtDate(f.created_at)}</div>
-      </div>
-      <div class="file-actions">
-        <button class="btn primary" onclick="openShare('${f.id}', '${escAttr(f.name)}')">分享</button>
-        <button class="btn danger" onclick="delFile('${f.id}')">删除</button>
+        <div class="fcard-actions">
+          <button class="btn primary" onclick="openShare('${f.id}', '${escAttr(f.name)}')">分享</button>
+          <a class="btn icon-only" title="下载" href="${fileUrl(f.id, true)}">⬇</a>
+          <button class="btn danger icon-only" title="删除" onclick="delFile('${f.id}')">🗑</button>
+        </div>
       </div>
     </div>`).join("");
 }
@@ -84,6 +100,32 @@ async function delFile(id) {
   toast("已删除");
   loadFiles();
 }
+
+/* ---------- 预览 ---------- */
+let pvFile = null;
+function openPreview(id) {
+  const f = FILES.find((x) => x.id === id);
+  if (!f) return;
+  pvFile = f;
+  const kind = kindOf(f.mime);
+  $("#pvName").textContent = f.name;
+  $("#pvMeta").textContent = `${fmtSize(f.size)} · ${fmtDate(f.created_at)}`;
+  const box = $("#pvBox");
+  if (kind === "video") box.innerHTML = `<video src="${fileUrl(f.id)}" controls playsinline autoplay></video>`;
+  else if (kind === "image") box.innerHTML = `<img src="${fileUrl(f.id)}" alt="">`;
+  else if (kind === "audio") box.innerHTML = `<audio src="${fileUrl(f.id)}" controls autoplay></audio>`;
+  else box.innerHTML = `<div class="empty">此类型暂不支持在线预览，可直接下载。</div>`;
+  $("#pvDownload").href = fileUrl(f.id, true);
+  $("#previewModal").classList.remove("hidden");
+}
+function closePreview() {
+  $("#pvBox").innerHTML = ""; // 停掉视频/音频播放并释放连接
+  $("#previewModal").classList.add("hidden");
+  pvFile = null;
+}
+$("#pvClose").onclick = closePreview;
+$("#previewModal").addEventListener("click", (e) => { if (e.target.id === "previewModal") closePreview(); });
+$("#pvShare").onclick = () => { if (pvFile) { const f = pvFile; closePreview(); openShare(f.id, f.name); } };
 
 /* ---------- 上传（预签名 URL 直传 R2，带进度） ---------- */
 const dz = $("#dropzone"), fi = $("#fileInput");
@@ -105,12 +147,10 @@ function uploadOne(file) {
   const bar = box.querySelector(".up-bar i"), pct = box.querySelector(".pct");
 
   (async () => {
-    // 1. 拿预签名上传地址
     const init = await api("/api/upload-url", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name: file.name, size: file.size, mime: file.type || "application/octet-stream" }),
     });
-    // 2. 浏览器直传 R2（不经过 Worker）
     await new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       xhr.open("PUT", init.upload_url);
@@ -121,10 +161,9 @@ function uploadOne(file) {
         }
       };
       xhr.onload = () => (xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error("R2 返回 " + xhr.status)));
-      xhr.onerror = () => reject(new Error("网络错误"));
+      xhr.onerror = () => reject(new Error("网络错误（多为 R2 CORS 未配置）"));
       xhr.send(file);
     });
-    // 3. 确认入库
     await api("/api/files/complete", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: init.id, r2_key: init.r2_key, name: file.name, size: file.size, mime: file.type || "application/octet-stream" }),
@@ -192,8 +231,8 @@ async function loadShares() {
         <div class="file-sub"><a href="/f/${s.token}" target="_blank">/f/${s.token}</a> · ${exp}${s.max_views ? " · 最多 " + s.max_views + " 次" : ""} · ${s.views} 次查看</div>
       </div>
       <div class="file-actions">
-        <button class="btn" onclick="copyShare('${s.token}')">复制</button>
-        <button class="btn danger" onclick="delShare('${s.token}')">删除</button>
+        <button class="btn small" onclick="copyShare('${s.token}')">复制</button>
+        <button class="btn small danger" onclick="delShare('${s.token}')">删除</button>
       </div>
     </div>`;
   }).join("");

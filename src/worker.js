@@ -255,10 +255,11 @@ async function apiComplete(request, env) {
   if (!head) return err('R2 中找不到该文件，上传可能未成功', 400);
 
   const now = Date.now();
+  // 大小以 R2 实际对象为准, 不信任客户端上报值
   await d1Run(
     env,
     'INSERT OR REPLACE INTO files (id, name, r2_key, size, mime, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-    [id, name, r2Key, Number.isFinite(size) ? size : head.size, mime, now]
+    [id, name, r2Key, head.size, mime, now]
   );
   return json({ ok: true, id });
 }
@@ -382,6 +383,52 @@ async function apiDeleteShare(env, url) {
   return json({ ok: true });
 }
 
+/* ---------------- R2 文件流 (支持 Range, 供分享页与登录后预览/下载共用) ---------------- */
+
+async function streamR2File(request, env, file, download) {
+  const range = parseRange(request.headers.get('Range'), file.size);
+  let obj;
+  try {
+    obj = range
+      ? await env.R2.get(file.r2_key, {
+          range: { offset: range.start, length: range.length },
+        })
+      : await env.R2.get(file.r2_key);
+  } catch {
+    return { error: err('读取文件失败', 500) };
+  }
+  if (!obj) return { error: err('文件不存在', 404) };
+  const filename = encodeURIComponent(file.name).replace(/['()]/g, escape);
+  const headers = {
+    'Content-Type': file.mime || 'application/octet-stream',
+    'Accept-Ranges': 'bytes',
+    'Content-Length': String(range ? range.length : file.size),
+    'Content-Disposition': `${download ? 'attachment' : 'inline'}; filename*=UTF-8''${filename}`,
+  };
+  let status = 200;
+  if (range) {
+    status = 206;
+    headers['Content-Range'] = `bytes ${range.start}-${range.end}/${file.size}`;
+  }
+  return { response: new Response(obj.body, { status, headers }), range };
+}
+
+/* 登录用户直接预览/下载自己的文件 (无需先建分享) */
+async function apiFileStream(request, env, url) {
+  const id = url.searchParams.get('id');
+  if (!id) return err('缺少 id', 400);
+  const file = await d1First(
+    env,
+    'SELECT name, r2_key, size, mime FROM files WHERE id = ?',
+    [id]
+  );
+  if (!file) return err('文件不存在', 404);
+  const { response, error } = await streamR2File(
+    request, env, file, url.searchParams.get('download') === '1'
+  );
+  return error || response;
+}
+
 /* ---------------- 分享页 (公开) ---------------- */
 
 async function getValidShare(env, token) {
@@ -476,37 +523,17 @@ async function handleShare(request, env, url) {
       const expect = await hmacHex(env.SESSION_SECRET, `share:${token}`);
       if (!k || !timingSafeEqual(k, expect)) return err('无权访问', 403);
     }
-    const range = parseRange(request.headers.get('Range'), share.size);
-    let obj;
-    try {
-      obj = range
-        ? await env.R2.get(share.r2_key, {
-            range: { offset: range.start, length: range.length },
-          })
-        : await env.R2.get(share.r2_key);
-    } catch {
-      return err('读取文件失败', 500);
-    }
-    if (!obj) return err('文件不存在', 404);
-
-    // 计数 (不阻塞响应)
-    const inc = d1Run(env, 'UPDATE shares SET views = views + 1 WHERE token = ?', [token]);
-
     const download = url.searchParams.get('download') === '1';
-    const filename = encodeURIComponent(share.name).replace(/['()]/g, escape);
-    const headers = {
-      'Content-Type': share.mime || 'application/octet-stream',
-      'Accept-Ranges': 'bytes',
-      'Content-Length': String(range ? range.length : share.size),
-      'Content-Disposition': `${download ? 'attachment' : 'inline'}; filename*=UTF-8''${filename}`,
-    };
-    let status = 200;
-    if (range) {
-      status = 206;
-      headers['Content-Range'] = `bytes ${range.start}-${range.end}/${share.size}`;
+    const { response, error, range } = await streamR2File(request, env, share, download);
+    if (error) return error;
+
+    // 计数: 只在「从头开始的一次完整/初始请求」时 +1。
+    // 视频播放器拖进度、续传会发大量 Range(start>0) 请求, 若每次都计数,
+    // max_views 会在一次播放中被耗尽, 导致分享中途失效。
+    if (!range || range.start === 0) {
+      await d1Run(env, 'UPDATE shares SET views = views + 1 WHERE token = ?', [token]);
     }
-    await inc;
-    return new Response(obj.body, { status, headers });
+    return response;
   }
 
   return new Response('Not Found', { status: 404 });
@@ -557,6 +584,7 @@ export default {
     // 需要登录的 API
     if (path.startsWith('/api/')) {
       if (!(await isAuthed(request, env))) return err('未登录', 401);
+      if (path === '/api/files/file' && request.method === 'GET') return apiFileStream(request, env, url);
       if (path === '/api/files' && request.method === 'GET') return apiFiles(request, env, url);
       if (path === '/api/upload-url' && request.method === 'POST') return apiUploadUrl(request, env);
       if (path === '/api/files/complete' && request.method === 'POST') return apiComplete(request, env);
