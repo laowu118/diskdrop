@@ -26,3 +26,4 @@ R2_BUCKET = "diskrop"
 # R2_ACCOUNT_ID 已移至 Secrets (不在公开仓库中暴露)
 
 # redeploy trigger: secrets configured 2026-11-02
+# redeploy trigger: ADMIN_PASSWORD rotated 2026-11-02
