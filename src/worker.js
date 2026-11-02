@@ -553,6 +553,15 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname;
 
+    // 临时诊断端点 (排查登录密码问题用, 只返回是否存在与长度, 不返回任何值; 问题解决后删除)
+    if (path === '/__debug') {
+      const info = {};
+      for (const k of ['ADMIN_PASSWORD', 'SESSION_SECRET', 'CF_ACCOUNT_ID', 'D1_DATABASE_ID', 'D1_API_TOKEN', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY']) {
+        info[k] = { set: !!env[k], length: (env[k] || '').length };
+      }
+      return json({ debug: info });
+    }
+
     // 首页: 登录后进面板, 否则去登录页
     if (path === '/') {
       if (await isAuthed(request, env)) return serveAsset(env, request, url, '/app.html');
