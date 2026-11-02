@@ -1,4 +1,4 @@
-# ◈ CunDrop
+# ◈ DiskDrop
 
 基于 **Cloudflare Workers + R2 + D1** 的个人网盘 / 图床。无服务器，推送到 GitHub 即自动部署。
 

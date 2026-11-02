@@ -1,4 +1,4 @@
-/* CunDrop 分享页逻辑 */
+/* DiskDrop 分享页逻辑 */
 (function () {
   const token = location.pathname.split("/").filter(Boolean)[1];
   const $ = (s) => document.querySelector(s);
@@ -75,7 +75,7 @@
     const sep = stream.includes("?") ? "&" : "?";
     $("#dlBtn").href = stream + sep + "download=1";
     $("#fileCard").classList.remove("hidden");
-    document.title = info.name + " · CunDrop 分享";
+    document.title = info.name + " · DiskDrop 分享";
   }
 
   boot();

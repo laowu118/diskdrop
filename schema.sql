@@ -1,4 +1,4 @@
--- CunDrop D1 数据库结构
+-- DiskDrop D1 数据库结构
 -- 初始化: wrangler d1 execute cundrop --file=./schema.sql
 
 CREATE TABLE IF NOT EXISTS files (

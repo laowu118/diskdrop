@@ -1,5 +1,5 @@
 /**
- * CunDrop — 基于 Cloudflare Workers + R2 + D1 的个人网盘/图床
+ * DiskDrop — 基于 Cloudflare Workers + R2 + D1 的个人网盘/图床
  *
  * 架构:
  * - 前端: public/ 静态资源 (Workers Static Assets, run_worker_first)

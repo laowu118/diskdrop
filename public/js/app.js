@@ -1,4 +1,4 @@
-/* CunDrop 面板逻辑 (Aurora UI) */
+/* DiskDrop 面板逻辑 (Aurora UI) */
 const $ = (s) => document.querySelector(s);
 let FILES = [], SHARES = [];
 const QUOTA_BYTES = 10 * 1024 * 1024 * 1024; // R2 免费额度 10GB
